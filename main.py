@@ -338,44 +338,85 @@ async def load_and_run_plugins():
     asyncio.ensure_future(start_periodic_ram_log(interval=60))
 
     # ═══════════════════════════════════════════════════════════════
-    # STARTUP SELF-TEST: Check if bot can SEND messages (FloodWait check)
-    # Tries to send a test message. If FloodWait, logs the duration.
+    # STARTUP SELF-TEST + PERSISTENT STARTUP MESSAGE
+    # 1. Checks if bot can SEND messages (FloodWait check)
+    # 2. Sends a PERSISTENT "Bot Started" message to ALL owners
+    #    (NOT auto-deleted — stays visible as deployment confirmation)
+    # 3. Prints clear banners to stdout for Render's debug console
     # ═══════════════════════════════════════════════════════════════
+    import time as _startup_time
+    startup_ts = _startup_time.strftime("%Y-%m-%d %H:%M:%S UTC", _startup_time.gmtime())
+    print("\n" + "=" * 70)
+    print("[STARTUP] ═══════════════════════════════════════════════════")
+    print(f"[STARTUP] Bot deployment started at: {startup_ts}")
+    print(f"[STARTUP] OWNER_ID count: {len(OWNER_ID)}")
+    print(f"[STARTUP] sleep_threshold=0 enforced on all clients (event-loop safe)")
+    print("[STARTUP] ═══════════════════════════════════════════════════")
+    print("=" * 70 + "\n")
+
     print("[SELF-TEST] Checking if bot can send messages...")
     flood_wait_until = None
     try:
-        # Try sending to the first owner
-        test_target = list(OWNER_ID)[0] if OWNER_ID else None
-        if test_target:
-            # Use get_me() first — lightweight check that doesn't consume quota
-            me = await app.get_me()
-            print(f"[SELF-TEST] get_me() OK — bot @{me.username} (id={me.id})")
+        # Try sending to ALL owners — they each get a persistent startup message
+        me = await app.get_me()
+        bot_username = getattr(me, 'username', 'unknown')
+        bot_id = getattr(me, 'id', 'unknown')
+        bot_first = getattr(me, 'first_name', 'Bot')
+        print(f"[SELF-TEST] get_me() OK — bot @{bot_username} (id={bot_id}, name={bot_first})")
 
-            # Now try a real send_message to verify FloodWait status
-            try:
-                test_msg = await app.send_message(
-                    test_target,
-                    "🟢 **Bot Started** — self-test message (auto-deleted in 5s)",
-                )
-                print(f"[SELF-TEST] send_message OK — bot can send messages!")
-                # Delete the test message after 5 seconds
-                await asyncio.sleep(5)
+        # Try a real send_message to verify FloodWait status
+        try:
+            # Build a rich, PERSISTENT startup notification
+            startup_msg = (
+                f"🟢 **BOT STARTED** — Deployment Confirmed\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🤖 **Bot:** @{bot_username} (ID: `{bot_id}`)\n"
+                f"📅 **Started:** `{startup_ts}`\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"✅ Telethon + Pyrogram clients initialized\n"
+                f"✅ sleep_threshold=0 (event-loop safe, no blocking FloodWait sleeps)\n"
+                f"✅ Two-tier cooldowns active\n"
+                f"✅ Privacy guard active (owner + auth only)\n\n"
+                f"**Ready to receive commands.** Try:\n"
+                f"• `/start` — main menu\n"
+                f"• `/ping` — health check\n"
+                f"• `/status` — bot status\n"
+                f"• `/clone` — clone channel with forums\n"
+                f"• `/batch` — batch forward messages\n"
+            )
+
+            # Send to ALL owners — each gets the persistent startup message
+            sent_count = 0
+            for owner_id in OWNER_ID:
                 try:
-                    await test_msg.delete()
-                except Exception:
-                    pass
-            except FloodWait as e:
-                wait_secs = e.value if hasattr(e, 'value') else 30
-                import time as _time
-                flood_wait_until = _time.time() + wait_secs
-                hours_left = wait_secs / 3600
-                print(f"[SELF-TEST] ❌ FloodWait ACTIVE — {wait_secs}s ({hours_left:.1f}h) remaining!")
-                print(f"[SELF-TEST] Bot can RECEIVE messages but CANNOT SEND responses until FloodWait expires.")
-                print(f"[SELF-TEST] FloodWait expires in ~{hours_left:.1f} hours. Commands will appear unresponsive until then.")
-            except Exception as e:
-                print(f"[SELF-TEST] send_message failed (non-FloodWait): {e}")
-        else:
-            print("[SELF-TEST] No OWNER_ID set — skipping send test")
+                    await app.send_message(owner_id, startup_msg)
+                    sent_count += 1
+                    print(f"[STARTUP] ✅ Persistent startup message sent to owner {owner_id}")
+                except FloodWait as e_inner:
+                    wait_secs = e_inner.value if hasattr(e_inner, 'value') else 30
+                    import time as _time_inner
+                    flood_wait_until = _time_inner.time() + wait_secs
+                    hours_left = wait_secs / 3600
+                    print(f"[STARTUP] ❌ FloodWait sending to owner {owner_id} — {wait_secs}s ({hours_left:.1f}h) remaining!")
+                    print(f"[STARTUP] ❌ Bot CANNOT SEND responses until FloodWait expires (~{hours_left:.1f}h)")
+                    break  # No point trying other owners — they'll all FloodWait
+                except Exception as e_per_owner:
+                    print(f"[STARTUP] ⚠️ Failed to send startup msg to owner {owner_id}: {e_per_owner}")
+
+            if sent_count > 0 and not flood_wait_until:
+                print(f"[SELF-TEST] ✅ send_message OK — sent startup notification to {sent_count} owner(s)")
+                print(f"[SELF-TEST] ✅ Bot can send messages — commands will respond normally")
+
+        except FloodWait as e:
+            wait_secs = e.value if hasattr(e, 'value') else 30
+            import time as _time
+            flood_wait_until = _time.time() + wait_secs
+            hours_left = wait_secs / 3600
+            print(f"[SELF-TEST] ❌ FloodWait ACTIVE — {wait_secs}s ({hours_left:.1f}h) remaining!")
+            print(f"[SELF-TEST] Bot can RECEIVE messages but CANNOT SEND responses until FloodWait expires.")
+            print(f"[SELF-TEST] FloodWait expires in ~{hours_left:.1f} hours. Commands will appear unresponsive until then.")
+        except Exception as e:
+            print(f"[SELF-TEST] send_message failed (non-FloodWait): {e}")
     except Exception as e:
         print(f"[SELF-TEST] Self-test error: {e}")
 
@@ -384,9 +425,13 @@ async def load_and_run_plugins():
         import time as _time
         from shared_client import app as _app
         _app._flood_wait_until = flood_wait_until
-        print(f"[SELF-TEST] ⚠️ Bot is in FloodWait until {_time.strftime('%H:%M:%S UTC', _time.gmtime(flood_wait_until))}")
+        print(f"\n[SELF-TEST] ⚠️ Bot is in FloodWait until {_time.strftime('%H:%M:%S UTC', _time.gmtime(flood_wait_until))}")
+        print(f"[SELF-TEST] ⚠️ Owner must wait for FloodWait to clear before commands will respond.")
     else:
-        print("[SELF-TEST] ✅ No FloodWait — bot should respond to commands normally")
+        print(f"\n[SELF-TEST] ✅ No FloodWait — bot should respond to commands normally")
+        print(f"[STARTUP] ═══════════════════════════════════════════════════")
+        print(f"[STARTUP] ✅ DEPLOYMENT COMPLETE — bot is live and ready!")
+        print(f"[STARTUP] ═══════════════════════════════════════════════════\n")
 
 async def main():
     """Main loop — NEVER exits. On crash, waits and retries forever.
@@ -462,8 +507,22 @@ async def main():
             await asyncio.sleep(delay)
 
 if __name__ == "__main__":
+    import time as _boot_time
+    boot_ts = _boot_time.strftime("%Y-%m-%d %H:%M:%S UTC", _boot_time.gmtime())
+    print("\n" + "=" * 70)
+    print("[BOOT] ============================================================")
+    print("[BOOT]  BOT PROCESS BOOTING")
+    print(f"[BOOT]  Timestamp: {boot_ts}")
+    print("[BOOT]  Render debug console — all logs stream to stdout")
+    print("[BOOT] ============================================================")
+    print("=" * 70 + "\n")
     print("Starting clients ...")
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Shutting down...")
+        print("\n[SHUTDOWN] KeyboardInterrupt — shutting down...")
+    except Exception as _boot_err:
+        import traceback as _tb
+        print(f"\n[FATAL] Bot crashed at boot: {_boot_err}")
+        _tb.print_exc()
+        print("\n[FATAL] Render will auto-restart the container.")

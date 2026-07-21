@@ -4788,7 +4788,7 @@ async def get_ubot(uid):
     # Fallback: check old UB dict
     if uid in UB: return UB.get(uid)
     try:
-        bot = Client(f"user_{uid}", bot_token=bt, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+        bot = Client(f"user_{uid}", bot_token=bt, api_id=API_ID, api_hash=API_HASH, in_memory=True, sleep_threshold=0)
         await bot.start()
         UB[uid] = bot
         user_bot_cache.put(uid, bot)
@@ -4811,7 +4811,7 @@ async def get_uclient(uid):
     if xxx:
         try:
             ss = dcs(xxx)
-            gg = Client(f'{uid}_client', api_id=API_ID, api_hash=API_HASH, device_model="v3saver", session_string=ss, in_memory=True)
+            gg = Client(f'{uid}_client', api_id=API_ID, api_hash=API_HASH, device_model="v3saver", session_string=ss, in_memory=True, sleep_threshold=0)
             # Add timeout to prevent hanging forever on start
             await asyncio.wait_for(gg.start(), timeout=60)
             await upd_dlg(gg)

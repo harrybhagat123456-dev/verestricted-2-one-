@@ -168,7 +168,7 @@ async def handle_login_steps(client, message):
             await edit_message_safely(status_msg,
                 '🔄 Processing phone number...')
             temp_client = Client(f'temp_{user_id}', api_id=API_ID, api_hash
-                =API_HASH, device_model=model, in_memory=True)
+                =API_HASH, device_model=model, in_memory=True, sleep_threshold=0)
             try:
                 await temp_client.connect()
                 sent_code = await temp_client.send_code(text)
@@ -300,7 +300,7 @@ async def logout_command(client, message):
         session_string = dcs(encss)
         telegram_logout_ok = False
         temp_client = Client(f'temp_logout_{user_id}', api_id=API_ID,
-            api_hash=API_HASH, session_string=session_string, in_memory=True)
+            api_hash=API_HASH, session_string=session_string, in_memory=True, sleep_threshold=0)
         try:
             # Try to connect with a TIMEOUT — revoked sessions can hang forever
             await asyncio.wait_for(temp_client.connect(), timeout=30)
