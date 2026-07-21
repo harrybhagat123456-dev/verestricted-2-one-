@@ -36,6 +36,8 @@ from pyrogram.errors import (
     FloodWait, ChannelPrivate, ChatIdInvalid,
     PeerIdInvalid, UserNotParticipant, BadRequest
 )
+from pyrogram.raw.functions.channels import ToggleForum
+from pyrogram.raw.types import InputChannel
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from shared_client import app as X
@@ -214,6 +216,108 @@ def _get_batch_helpers():
 # SOURCE CHANNEL ANALYSIS
 # ═══════════════════════════════════════════════════════════════
 
+async def _is_chat_forum(client: Client, chat_id, user_client: Client = None) -> bool:
+    """Robustly detect whether a chat is a forum.
+
+    pyrofork 2.3.x's `Chat` object does NOT expose `is_forum` as a public
+    attribute, so `getattr(chat, 'is_forum', False)` always returns False.
+    This helper uses three layered detection methods:
+
+    1. `getattr(chat, 'is_forum', False)` — works for pyrogram forks that DO expose it.
+    2. Probe `get_forum_topics(chat_id)` — if any topic is returned, it's a forum.
+       This requires the client to be a participant with read access.
+    3. Raw MTProto inspection: fetch the underlying `Channel` object via
+       `client.resolve_peer(chat_id)` and read `channel.forum`.
+
+    Returns True as soon as any method confirms forum status; False if all fail.
+    """
+    # Method 1: attribute check
+    try:
+        chat = await client.get_chat(chat_id)
+        if getattr(chat, 'is_forum', False):
+            return True
+    except Exception as e:
+        print(f"[CLONE-ISFORUM] get_chat failed on {chat_id}: {e}")
+
+    # Method 2: probe get_forum_topics
+    probe_clients = [client] + ([user_client] if user_client else [])
+    for pc in probe_clients:
+        if not pc or not hasattr(pc, 'get_forum_topics'):
+            continue
+        try:
+            async for _t in pc.get_forum_topics(chat_id):
+                return True  # at least one topic → it's a forum
+            # Empty iterator could mean "not a forum" OR "forum with no topics"
+            # — fall through to Method 3 to be sure.
+            break
+        except Exception as e:
+            err_str = str(e).lower()
+            # Errors like "TOPIC_CLOSED", "CHAT_NOT_FORUM" → definitely not a forum
+            if 'not_forum' in err_str or 'not a forum' in err_str or 'chat_not_forum' in err_str:
+                return False
+            # Other errors (permission, flood) → try next method
+            print(f"[CLONE-ISFORUM] get_forum_topics probe failed: {e}")
+            continue
+
+    # Method 3: raw MTProto inspection
+    for pc in probe_clients:
+        if not pc:
+            continue
+        try:
+            peer = await pc.resolve_peer(chat_id)
+            # Channel objects have a `forum` boolean flag
+            if hasattr(peer, 'forum') and peer.forum:
+                return True
+            # Some builds wrap it differently
+            if hasattr(peer, 'channel') and hasattr(peer.channel, 'forum'):
+                return bool(peer.channel.forum)
+        except Exception as e:
+            print(f"[CLONE-ISFORUM] resolve_peer inspection failed: {e}")
+            continue
+
+    return False
+
+
+async def _convert_to_forum(client: Client, chat_id) -> bool:
+    """Convert a supergroup/channel to a forum using raw ToggleForum API.
+
+    The client must be an admin with appropriate rights (admin + can_change_info).
+    Bots can do this if they have those rights; user clients can always do it
+    if they are admin/creator.
+
+    Returns True on success, False on failure.
+    """
+    try:
+        peer = await client.resolve_peer(chat_id)
+        # ToggleForum requires an InputChannel. resolve_peer usually returns
+        # an InputPeerChannel for supergroups/channels — convert if needed.
+        if not isinstance(peer, InputChannel):
+            if hasattr(peer, 'channel_id') and hasattr(peer, 'access_hash'):
+                peer = InputChannel(
+                    channel_id=peer.channel_id,
+                    access_hash=peer.access_hash,
+                )
+            else:
+                print(f"[CLONE-CONVERT] Cannot build InputChannel from peer {type(peer).__name__}")
+                return False
+
+        await client.invoke(ToggleForum(
+            channel=peer,
+            enabled=True,
+            tabs=False,
+        ))
+        print(f"[CLONE-CONVERT] Successfully converted chat {chat_id} to a forum")
+        return True
+    except Exception as e:
+        err_str = str(e).lower()
+        # If already a forum, treat as success
+        if 'already' in err_str and 'forum' in err_str:
+            print(f"[CLONE-CONVERT] Chat {chat_id} is already a forum")
+            return True
+        print(f"[CLONE-CONVERT] Failed to convert {chat_id} to forum: {e}")
+        return False
+
+
 async def analyze_source_channel(client: Client, chat_id, user_client: Client = None):
     """Analyze the source channel to determine its structure.
 
@@ -275,6 +379,22 @@ async def analyze_source_channel(client: Client, chat_id, user_client: Client = 
                         break
                 except Exception:
                     pass  # Not a forum or permission denied — keep is_forum=False
+
+        # Final fallback: raw MTProto inspection of the Channel object.
+        # The raw `Channel` has a `forum` boolean flag we can read directly.
+        if not result['is_forum']:
+            try:
+                peer = await client.resolve_peer(chat_id)
+                if hasattr(peer, 'forum') and peer.forum:
+                    result['is_forum'] = True
+                    print(f"[CLONE-ANALYZE] is_forum detected via raw MTProto (peer.forum=True)")
+                elif user_client:
+                    peer_u = await user_client.resolve_peer(chat_id)
+                    if hasattr(peer_u, 'forum') and peer_u.forum:
+                        result['is_forum'] = True
+                        print(f"[CLONE-ANALYZE] is_forum detected via raw MTProto (user_client peer.forum=True)")
+            except Exception as _raw_err:
+                print(f"[CLONE-ANALYZE] Raw MTProto forum check failed: {_raw_err}")
     except Exception as e:
         print(f"[CLONE-ANALYZE] Error getting chat info: {e}")
         # Try with user client
@@ -513,8 +633,13 @@ async def create_destination_topics(
     if not source_topics:
         return topic_mapping
 
-    total = len([t for t in source_topics if not t['is_general']])
+    # Pre-flight check: verify the client can actually create topics by
+    # probing with the first non-General topic. If this fails with a
+    # permission error, we abort early instead of failing per-topic.
+    non_general_topics = [t for t in source_topics if not t['is_general']]
+    total = len(non_general_topics)
     created = 0
+    permission_denied = False
 
     for idx, topic in enumerate(source_topics):
         # Skip General topic — it's auto-created by Telegram
@@ -524,6 +649,11 @@ async def create_destination_topics(
             print(f"[CLONE-CREATE] Skipped General topic (id={topic['topic_id']}), mapping to dest topic 1")
             continue
 
+        if permission_denied:
+            # Already failed once on permission — don't keep trying.
+            topic_mapping[topic['topic_id']] = None
+            continue
+
         topic_name = topic['topic_name']
         # topic_icon_color is None when the source had an invalid/zero colour —
         # omit the parameter so Telegram picks one automatically.
@@ -531,16 +661,16 @@ async def create_destination_topics(
 
         try:
             await _clone_rate_limiter.acquire()
-            # create_forum_topic returns a Message (the service message).
-            # Its .id IS the new topic's thread_id.
+            # create_forum_topic returns a ForumTopicCreated object.
+            # Its .id IS the new topic's thread_id (the service message ID).
             create_kwargs = dict(chat_id=dest_chat_id, title=topic_name)
             if topic_color is not None:
                 create_kwargs['icon_color'] = topic_color
             result = await send_client.create_forum_topic(**create_kwargs)
-            # The result message's id IS the new topic's thread_id
+            # ForumTopicCreated.id is the topic's thread_id
             dest_topic_id = result.id if hasattr(result, 'id') else None
             if not dest_topic_id:
-                # Try getting it from the message
+                # Should not happen with pyrofork 2.3.x, but be defensive
                 dest_topic_id = getattr(result, 'message_id', None)
 
             if dest_topic_id:
@@ -571,8 +701,23 @@ async def create_destination_topics(
                 topic_mapping[topic['topic_id']] = None
 
         except Exception as e:
+            err_str = str(e).lower()
             print(f"[CLONE-CREATE] Failed to create topic '{topic_name}': {e}")
-            topic_mapping[topic['topic_id']] = None
+            # Detect permission errors and stop trying — every subsequent
+            # call will fail the same way, so we save API quota and time.
+            if (
+                'not enough rights' in err_str
+                or 'admin right needed' in err_str
+                or 'forbidden' in err_str
+                or 'chat_admin_rights_required' in err_str
+                or 'user_not_mutual_contact' in err_str
+                or 'manage_topics' in err_str
+            ):
+                print(f"[CLONE-CREATE] Permission error — aborting further topic creation")
+                permission_denied = True
+                topic_mapping[topic['topic_id']] = None
+            else:
+                topic_mapping[topic['topic_id']] = None
 
         if progress_callback:
             try:
@@ -580,7 +725,8 @@ async def create_destination_topics(
             except Exception:
                 pass
 
-    print(f"[CLONE-CREATE] Created {created}/{total} topics in destination")
+    print(f"[CLONE-CREATE] Created {created}/{total} topics in destination"
+          f"{' (permission denied — fell back to General for remaining)' if permission_denied else ''}")
     return topic_mapping
 
 
@@ -740,7 +886,8 @@ async def run_clone(
             )
             return
 
-        dest_is_forum = getattr(dest_chat_info, 'is_forum', False)
+        dest_is_forum = await _is_chat_forum(ubot, dest_chat_id, uc)
+        print(f"[CLONE] Destination chat {dest_chat_id} — detected as forum: {dest_is_forum}")
 
         # ── Determine which client can actually send to the destination ──
         # The bot client may not be a member/admin of the dest channel.
@@ -753,18 +900,53 @@ async def run_clone(
             print(f"[CLONE] Bot cannot reach dest {dest_chat_id} ({_rp_err}) — falling back to user client for sending")
             _send_client = uc
 
+        # ── If source is a forum but dest is NOT, try to auto-convert dest ──
+        # pyrofork's Chat object doesn't expose is_forum reliably, so we use
+        # _is_chat_forum() which probes via get_forum_topics + raw MTProto.
+        # If dest is still not a forum, attempt conversion via ToggleForum raw API.
         if is_forum and not dest_is_forum:
             await safe_edit(pt,
-                '⚠️ **Source has forums but destination is NOT a forum!**\n\n'
+                f'🔄 **Destination is not a forum yet.**\n\n'
                 f'Destination: `{dest_chat_info.title}`\n\n'
-                'Options:\n'
-                '1. Convert destination to a forum (via Telegram app → Edit → Convert to Forum)\n'
-                '2. Continue anyway (all messages go to General, no topic separation)\n\n'
-                '⏳ Waiting 15s then continuing anyway...'
+                f'Attempting to **auto-convert** it to a forum so topics can be created...\n'
+                f'(requires the bot/userbot to be admin with **Change Info** rights)'
             )
-            await asyncio.sleep(15)
-            # User was warned — continue with flat mode
-            is_forum = False  # Downgrade to flat mode
+
+            conversion_ok = False
+            # Try with the send client first (most likely to have admin rights)
+            for try_client_label, try_client in [
+                ("send_client", _send_client),
+                ("user_client", uc),
+                ("bot", ubot),
+            ]:
+                if not try_client:
+                    continue
+                print(f"[CLONE] Trying to convert dest to forum via {try_client_label}...")
+                if await _convert_to_forum(try_client, dest_chat_id):
+                    conversion_ok = True
+                    break
+                await asyncio.sleep(1)  # small delay between attempts
+
+            if conversion_ok:
+                dest_is_forum = True
+                await safe_edit(pt,
+                    f'✅ **Destination converted to a forum!**\n\n'
+                    f'⏳ Proceeding to create topics...'
+                )
+                await asyncio.sleep(2)  # let Telegram propagate the change
+            else:
+                await safe_edit(pt,
+                    '⚠️ **Could not auto-convert destination to a forum.**\n\n'
+                    f'Destination: `{dest_chat_info.title}`\n\n'
+                    'Options:\n'
+                    '1. Convert destination to a forum manually (Telegram app → Edit → Topics → Turn On)\n'
+                    '2. Make sure the bot/userbot is admin with **Change Info** rights, then retry\n'
+                    '3. Continue anyway (all messages go to General, no topic separation)\n\n'
+                    '⏳ Waiting 15s then continuing in flat mode...'
+                )
+                await asyncio.sleep(15)
+                # User was warned — continue with flat mode
+                is_forum = False  # Downgrade to flat mode
 
         # ─── STEP 3: Create topics in destination ───
         topic_mapping = {}  # source_topic_id -> dest_topic_id
@@ -791,10 +973,22 @@ async def run_clone(
             )
 
             created_count = sum(1 for v in topic_mapping.values() if v is not None)
-            await safe_edit(pt,
-                f'✅ **Step 3/5: Created {created_count} topics** in destination\n\n'
-                f'⏳ Starting message cloning...'
-            )
+            failed_count = sum(1 for v in topic_mapping.values() if v is None and v != 1)
+            # Don't count General (mapped to 1) as failed
+            total_to_create = sum(1 for t in source_topics if not t['is_general'])
+            failed_count = max(0, total_to_create - created_count)
+            if failed_count > 0:
+                await safe_edit(pt,
+                    f'⚠️ **Step 3/5: Created {created_count}/{total_to_create} topics**\n\n'
+                    f'{failed_count} topic(s) could not be created (likely missing **Manage Topics** admin right).\n'
+                    f'Messages from those topics will go to General.\n\n'
+                    f'⏳ Starting message cloning...'
+                )
+            else:
+                await safe_edit(pt,
+                    f'✅ **Step 3/5: Created {created_count} topics** in destination\n\n'
+                    f'⏳ Starting message cloning...'
+                )
         else:
             await safe_edit(pt, '✅ **Step 3/5: Skipped** (no forum topics to create)\n\n⏳ Starting message cloning...')
 
