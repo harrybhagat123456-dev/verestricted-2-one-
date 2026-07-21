@@ -1,0 +1,23 @@
+c_cache_size=1
+[STARTUP] Normalized src_chat_id: '-1003764889894' → int -1003764889894
+[STARTUP] user_client: resolve_peer OK for src_chat=-1003764889894
+[STARTUP] user_client ✅ resolved src_chat=-1003764889894 → Game Changer 2026
+[STARTUP] user_client: dest_chat=-1003981783865 resolved OK
+[STARTUP] bot_client: resolve_peer failed for src_chat=-1003764889894: Telegram says: [400 CHANNEL_INVALID] (caused by "channels.GetChannels") Pyrogram 2.3.69 thinks: The channel parameter is invalid
+[STARTUP] bot_client: Refreshing dialogs to populate peer cache...
+[STARTUP] bot_client: resolve_peer failed after dialog refresh for src_chat=-1003764889894: Telegram says: [400 BOT_METHOD_INVALID] (caused by "messages.GetDialogs") Pyrogram 2.3.69 thinks: The method can't be used by bots
+[STARTUP] bot_client ❌ ALL methods failed for src_chat=-1003764889894: Telegram says: [400 CHANNEL_INVALID] (caused by "channels.GetChannels") Pyrogram 2.3.69 thinks: The channel parameter is invalid
+[STARTUP] bot_client: dest_chat=-1003981783865 resolve failed: Telegram says: [400 CHANNEL_INVALID] (caused by "channels.GetChannels") Pyrogram 2.3.69 thinks: The channel parameter is invalid
+[BATCH] Clone handler error: ImportError: cannot import name 'save_upload_map' from 'plugins.batch' (/home/runner/workspace/plugins/batch.py)
+Traceback (most recent call last):
+  File "/home/runner/workspace/plugins/batch.py", line 10194, in text_handler
+    await _clone_handler(c, m)
+  File "/home/runner/workspace/plugins/channel_clone.py", line 1242, in clone_text_handler
+    await _execute_clone(c, m, uid, cid, sid, lt, count)
+  File "/home/runner/workspace/plugins/channel_clone.py", line 1313, in _execute_clone
+    await run_clone(
+  File "/home/runner/workspace/plugins/channel_clone.py", line 629, in run_clone
+    from plugins.batch import (
+ImportError: cannot import name 'save_upload_map' from 'plugins.batch' (/home/runner/workspace/plugins/batch.py)
+[PROBE-G2] app_id=140052861089264 msg='all' cmd_filter=False me=Hgghhhyyttbot m.cmd=None
+[PYRO-DEBUG] app_id=140052861089264 Private msg from 1567552431: all
