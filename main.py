@@ -47,7 +47,120 @@ from utils.ram_monitor import log_ram, start_periodic_ram_log
 log_ram("main_startup")
 
 async def load_and_run_plugins():
+    # ═══════════════════════════════════════════════════════════════
+    # PHASE 1: Start clients (Telethon + Pyrogram + Userbot)
+    # ═══════════════════════════════════════════════════════════════
+    print("\n[PHASE-1] ═══════════════════════════════════════════════════")
+    print("[PHASE-1] Starting Telethon + Pyrogram + Userbot clients...")
+    print("[PHASE-1] ═══════════════════════════════════════════════════\n")
     await start_client()
+    print("\n[PHASE-1] ✅ start_client() returned — clients are up")
+
+    # ═══════════════════════════════════════════════════════════════
+    # PHASE 2: EARLY STARTUP NOTIFICATION (sent BEFORE plugin loading)
+    # This fires IMMEDIATELY after Pyrogram connects. Even if every
+    # plugin crashes during load, the owner still gets this message,
+    # proving the bot is alive and reachable.
+    # ═══════════════════════════════════════════════════════════════
+    print("\n[PHASE-2] ═══════════════════════════════════════════════════")
+    print("[PHASE-2] Sending EARLY startup notification to owners...")
+    print("[PHASE-2] ═══════════════════════════════════════════════════\n")
+    try:
+        from shared_client import app as _early_app
+        from config import OWNER_ID as _early_owner_id
+        import time as _early_time
+
+        if not _early_app:
+            print("[PHASE-2] ❌ CRITICAL: Pyrogram app is None — bot cannot send!")
+            print("[PHASE-2] ❌ Check BOT_TOKEN env var on Render — it may be invalid.")
+        elif not _early_owner_id:
+            print("[PHASE-2] ❌ CRITICAL: OWNER_ID is EMPTY — no one to send startup message to!")
+            print("[PHASE-2] ❌ Set OWNER_ID env var on Render (space-separated Telegram user IDs).")
+        else:
+            _early_ts = _early_time.strftime("%Y-%m-%d %H:%M:%S UTC", _early_time.gmtime())
+            _early_me = await _early_app.get_me()
+            _early_bot_username = getattr(_early_me, 'username', 'unknown')
+            _early_bot_id = getattr(_early_me, 'id', 'unknown')
+            print(f"[PHASE-2] Bot identity: @{_early_bot_username} (id={_early_bot_id})")
+            print(f"[PHASE-2] Owner IDs: {list(_early_owner_id)}")
+
+            _early_msg = (
+                f"🟢 **BOT STARTED** — Deployment Confirmed\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🤖 **Bot:** @{_early_bot_username} (ID: `{_early_bot_id}`)\n"
+                f"📅 **Started:** `{_early_ts}`\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"✅ Telethon + Pyrogram clients connected\n"
+                f"✅ sleep_threshold=0 (event-loop safe)\n"
+                f"⏳ Loading plugins... (full feature set in ~10s)\n\n"
+                f"**Ready to receive commands.** Try:\n"
+                f"• `/start` — main menu\n"
+                f"• `/ping` — health check\n"
+                f"• `/status` — bot status\n"
+                f"• `/clone` — clone channel with forums\n"
+                f"• `/batch` — batch forward messages\n"
+            )
+
+            _early_sent = 0
+            _early_flood = False
+            for _oid in _early_owner_id:
+                try:
+                    await _early_app.send_message(_oid, _early_msg)
+                    _early_sent += 1
+                    print(f"[PHASE-2] ✅ Startup message sent to owner {_oid}")
+                except FloodWait as _fw:
+                    _fw_secs = _fw.value if hasattr(_fw, 'value') else 30
+                    _fw_h = _fw_secs / 3600
+                    print(f"[PHASE-2] ❌ FloodWait {_fw_secs}s ({_fw_h:.1f}h) sending to owner {_oid}")
+                    print(f"[PHASE-2] ❌ Bot CANNOT SEND until FloodWait clears (~{_fw_h:.1f}h)")
+                    _early_flood = True
+                    _early_app._flood_wait_until = _early_time.time() + _fw_secs
+                    break
+                except Exception as _e:
+                    print(f"[PHASE-2] ⚠️ Failed to send to owner {_oid}: {_e}")
+
+            if _early_sent > 0:
+                print(f"[PHASE-2] ✅ Startup notification delivered to {_early_sent} owner(s)")
+            elif _early_flood:
+                print("[PHASE-2] ⚠️ Bot is in FloodWait — commands will not respond until it clears")
+            else:
+                print("[PHASE-2] ❌ No startup message delivered — check OWNER_ID and bot permissions")
+
+            # Schedule a RETRY loop in background — if FloodWait cleared later,
+            # resend the startup message so the owner knows the bot recovered.
+            if _early_flood:
+                async def _retry_startup_msg():
+                    """Retry sending startup message every 60s for up to 30 min."""
+                    for _attempt in range(30):
+                        await asyncio.sleep(60)
+                        try:
+                            for _oid in _early_owner_id:
+                                try:
+                                    await _early_app.send_message(
+                                        _oid,
+                                        f"🟢 **BOT RECOVERED** — FloodWait cleared\n\n"
+                                        f"📅 `{_early_time.strftime('%Y-%m-%d %H:%M:%S UTC', _early_time.gmtime())}`\n\n"
+                                        f"Bot is now responsive. Try /start or /ping."
+                                    )
+                                    print(f"[PHASE-2-RETRY] ✅ Recovery message sent to owner {_oid}")
+                                    return
+                                except FloodWait:
+                                    print(f"[PHASE-2-RETRY] Still in FloodWait, will retry...")
+                                    break
+                                except Exception:
+                                    continue
+                        except Exception as _re:
+                            print(f"[PHASE-2-RETRY] Error: {_re}")
+                asyncio.ensure_future(_retry_startup_msg())
+                print("[PHASE-2] Scheduled background retry loop (every 60s for 30 min)")
+
+    except Exception as _early_err:
+        print(f"[PHASE-2] ❌ Early startup notification failed: {_early_err}")
+        import traceback as _tb
+        _tb.print_exc()
+
+    print("\n[PHASE-2] ✅ Done — proceeding to plugin loading\n")
+
     plugin_dir = "plugins"
     plugins = [f[:-3] for f in os.listdir(plugin_dir) if f.endswith(".py") and f != "__init__.py"]
 
@@ -141,8 +254,66 @@ async def load_and_run_plugins():
     # --- Direct /ping command on main app — proves command handling works on this app ---
     @app.on_message(pf.command("ping") & pf.private)
     async def ping_handler(c, m):
-        print(f"[PING] /ping received from {m.from_user.id} — app_id={id(app)}")
-        await m.reply_text(f"🏓 pong! (app_id={id(app)})")
+        uid = m.from_user.id
+        is_owner = uid in OWNER_ID
+        is_auth = await is_auth_user(uid) if not is_owner else True
+        print(f"[PING] /ping received from {uid} — app_id={id(app)} owner={is_owner} auth={is_auth}")
+        import time as _ping_time
+        _ping_ts = _ping_time.strftime("%H:%M:%S UTC", _ping_time.gmtime())
+        await m.reply_text(
+            f"🏓 **pong!**\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🕐 **Time:** `{_ping_ts}`\n"
+            f"🆔 **Your ID:** `{uid}`\n"
+            f"👑 **Owner:** {'✅ YES' if is_owner else '❌ no'}\n"
+            f"🔑 **Auth:** {'✅ YES' if is_auth else '❌ no'}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Bot is alive and responding."
+        )
+
+    # --- /diag command — diagnostic info for owner ---
+    @app.on_message(pf.command("diag") & pf.private)
+    async def diag_handler(c, m):
+        """Diagnostic command — shows bot state for debugging."""
+        uid = m.from_user.id
+        if uid not in OWNER_ID:
+            await m.reply_text("❌ Owner only command.")
+            return
+        import time as _diag_time
+        from shared_client import app as _diag_app, client as _diag_client, userbot as _diag_userbot
+        _diag_ts = _diag_time.strftime("%Y-%m-%d %H:%M:%S UTC", _diag_time.gmtime())
+        _app_connected = getattr(_diag_app, 'is_connected', False) if _diag_app else False
+        _client_connected = _diag_client.is_connected() if _diag_client else False
+        _ubot_connected = getattr(_diag_userbot, 'is_connected', False) if _diag_userbot else False
+        _flood_wait = getattr(_diag_app, '_flood_wait_until', None) if _diag_app else None
+        if _flood_wait:
+            _flood_remaining = max(0, int(_flood_wait - _diag_time.time()))
+            _flood_str = f"⚠️ {_flood_remaining}s remaining"
+        else:
+            _flood_str = "✅ None"
+        try:
+            _me = await _diag_app.get_me()
+            _bot_info = f"@{_me.username} (id={_me.id})"
+        except Exception as _e:
+            _bot_info = f"Error: {_e}"
+        await m.reply_text(
+            f"🔬 **Diagnostic Report**\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🕐 **Time:** `{_diag_ts}`\n"
+            f"🤖 **Bot:** {_bot_info}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"**Client Status:**\n"
+            f"• Pyrogram app: {'✅ connected' if _app_connected else '❌ disconnected'}\n"
+            f"• Telethon client: {'✅ connected' if _client_connected else '❌ disconnected'}\n"
+            f"• Userbot: {'✅ connected' if _ubot_connected else '❌ not configured'}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"**FloodWait:** {_flood_str}\n"
+            f"**OWNER_ID:** {list(OWNER_ID)}\n"
+            f"**Your ID:** `{uid}`\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"If bot was unresponsive, this message proves it's working now."
+        )
+        print(f"[DIAG] /diag used by owner {uid} — app_connected={_app_connected} flood={_flood_str}")
 
     # --- Diagnostic probe at group=2 — confirms messages reach between guard and debug ---
     @app.on_message(pf.private, group=2)
@@ -338,100 +509,20 @@ async def load_and_run_plugins():
     asyncio.ensure_future(start_periodic_ram_log(interval=60))
 
     # ═══════════════════════════════════════════════════════════════
-    # STARTUP SELF-TEST + PERSISTENT STARTUP MESSAGE
-    # 1. Checks if bot can SEND messages (FloodWait check)
-    # 2. Sends a PERSISTENT "Bot Started" message to ALL owners
-    #    (NOT auto-deleted — stays visible as deployment confirmation)
-    # 3. Prints clear banners to stdout for Render's debug console
+    # FINAL CONFIRMATION — plugins loaded, bot is fully ready
+    # (Startup message was already sent in PHASE-2, before plugin loading.
+    #  This just logs the completion to stdout for Render debug console.)
     # ═══════════════════════════════════════════════════════════════
-    import time as _startup_time
-    startup_ts = _startup_time.strftime("%Y-%m-%d %H:%M:%S UTC", _startup_time.gmtime())
+    import time as _final_time
+    _final_ts = _final_time.strftime("%Y-%m-%d %H:%M:%S UTC", _final_time.gmtime())
     print("\n" + "=" * 70)
-    print("[STARTUP] ═══════════════════════════════════════════════════")
-    print(f"[STARTUP] Bot deployment started at: {startup_ts}")
-    print(f"[STARTUP] OWNER_ID count: {len(OWNER_ID)}")
-    print(f"[STARTUP] sleep_threshold=0 enforced on all clients (event-loop safe)")
-    print("[STARTUP] ═══════════════════════════════════════════════════")
+    print("[READY] ═══════════════════════════════════════════════════")
+    print(f"[READY] ✅ ALL PLUGINS LOADED — bot is fully operational")
+    print(f"[READY] ✅ Completed at: {_final_ts}")
+    print(f"[READY] ✅ Owner count: {len(OWNER_ID)}")
+    print(f"[READY] ✅ sleep_threshold=0 on all clients")
+    print("[READY] ═══════════════════════════════════════════════════")
     print("=" * 70 + "\n")
-
-    print("[SELF-TEST] Checking if bot can send messages...")
-    flood_wait_until = None
-    try:
-        # Try sending to ALL owners — they each get a persistent startup message
-        me = await app.get_me()
-        bot_username = getattr(me, 'username', 'unknown')
-        bot_id = getattr(me, 'id', 'unknown')
-        bot_first = getattr(me, 'first_name', 'Bot')
-        print(f"[SELF-TEST] get_me() OK — bot @{bot_username} (id={bot_id}, name={bot_first})")
-
-        # Try a real send_message to verify FloodWait status
-        try:
-            # Build a rich, PERSISTENT startup notification
-            startup_msg = (
-                f"🟢 **BOT STARTED** — Deployment Confirmed\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🤖 **Bot:** @{bot_username} (ID: `{bot_id}`)\n"
-                f"📅 **Started:** `{startup_ts}`\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"✅ Telethon + Pyrogram clients initialized\n"
-                f"✅ sleep_threshold=0 (event-loop safe, no blocking FloodWait sleeps)\n"
-                f"✅ Two-tier cooldowns active\n"
-                f"✅ Privacy guard active (owner + auth only)\n\n"
-                f"**Ready to receive commands.** Try:\n"
-                f"• `/start` — main menu\n"
-                f"• `/ping` — health check\n"
-                f"• `/status` — bot status\n"
-                f"• `/clone` — clone channel with forums\n"
-                f"• `/batch` — batch forward messages\n"
-            )
-
-            # Send to ALL owners — each gets the persistent startup message
-            sent_count = 0
-            for owner_id in OWNER_ID:
-                try:
-                    await app.send_message(owner_id, startup_msg)
-                    sent_count += 1
-                    print(f"[STARTUP] ✅ Persistent startup message sent to owner {owner_id}")
-                except FloodWait as e_inner:
-                    wait_secs = e_inner.value if hasattr(e_inner, 'value') else 30
-                    import time as _time_inner
-                    flood_wait_until = _time_inner.time() + wait_secs
-                    hours_left = wait_secs / 3600
-                    print(f"[STARTUP] ❌ FloodWait sending to owner {owner_id} — {wait_secs}s ({hours_left:.1f}h) remaining!")
-                    print(f"[STARTUP] ❌ Bot CANNOT SEND responses until FloodWait expires (~{hours_left:.1f}h)")
-                    break  # No point trying other owners — they'll all FloodWait
-                except Exception as e_per_owner:
-                    print(f"[STARTUP] ⚠️ Failed to send startup msg to owner {owner_id}: {e_per_owner}")
-
-            if sent_count > 0 and not flood_wait_until:
-                print(f"[SELF-TEST] ✅ send_message OK — sent startup notification to {sent_count} owner(s)")
-                print(f"[SELF-TEST] ✅ Bot can send messages — commands will respond normally")
-
-        except FloodWait as e:
-            wait_secs = e.value if hasattr(e, 'value') else 30
-            import time as _time
-            flood_wait_until = _time.time() + wait_secs
-            hours_left = wait_secs / 3600
-            print(f"[SELF-TEST] ❌ FloodWait ACTIVE — {wait_secs}s ({hours_left:.1f}h) remaining!")
-            print(f"[SELF-TEST] Bot can RECEIVE messages but CANNOT SEND responses until FloodWait expires.")
-            print(f"[SELF-TEST] FloodWait expires in ~{hours_left:.1f} hours. Commands will appear unresponsive until then.")
-        except Exception as e:
-            print(f"[SELF-TEST] send_message failed (non-FloodWait): {e}")
-    except Exception as e:
-        print(f"[SELF-TEST] Self-test error: {e}")
-
-    # Store FloodWait info globally for /status command
-    if flood_wait_until:
-        import time as _time
-        from shared_client import app as _app
-        _app._flood_wait_until = flood_wait_until
-        print(f"\n[SELF-TEST] ⚠️ Bot is in FloodWait until {_time.strftime('%H:%M:%S UTC', _time.gmtime(flood_wait_until))}")
-        print(f"[SELF-TEST] ⚠️ Owner must wait for FloodWait to clear before commands will respond.")
-    else:
-        print(f"\n[SELF-TEST] ✅ No FloodWait — bot should respond to commands normally")
-        print(f"[STARTUP] ═══════════════════════════════════════════════════")
-        print(f"[STARTUP] ✅ DEPLOYMENT COMPLETE — bot is live and ready!")
-        print(f"[STARTUP] ═══════════════════════════════════════════════════\n")
 
 async def main():
     """Main loop — NEVER exits. On crash, waits and retries forever.
