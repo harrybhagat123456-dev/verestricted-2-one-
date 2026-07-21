@@ -1,0 +1,42 @@
+[2026-07-17 16:04:52] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-17 16:04:59] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-17 16:10:49] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-17 16:46:55] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-17 16:49:33] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-17 16:54:00] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-17 16:55:15] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-17 17:00:02] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-17 17:15:58] [MULTI-SRC-MAP] upload_maps: total docs for uid=1567552431: 1
+[2026-07-17 17:15:58] [MAP-DB] uid=1567552431 source_channel='-1003775273205' dest_channel=-1003949827074 mappings=2
+[2026-07-17 17:15:58] [MAP-DB] uid=1567552431 source_channel='-1003775273205' mappings=2 key_range=71-72 sample=[71, 72]
+[2026-07-17 17:15:58] [MULTI-SRC-MAP] Loaded 2 total mappings from 1 source channel(s) [upload_maps]
+[2026-07-17 17:15:58] [MULTI-SRC-MAP] dest_channel_id filter=None normalize=None
+[2026-07-17 17:15:58] [MULTI-SRC-MAP] mirror_state: total=0 matching_dest=0 query={}
+[2026-07-17 17:15:58] [MULTI-SRC-MAP] Loaded 144 src→dst mappings from fingerprints collection (total docs: 144, overwrites: 70)
+[2026-07-17 17:15:58] [MULTI-SRC] Built multi_source_channels: 2 channels, 76 total mappings
+[2026-07-17 17:51:00] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 03:48:37] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 03:50:35] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 04:02:48] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 04:19:19] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 04:21:01] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 04:36:38] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 04:44:53] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 04:52:01] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 04:57:30] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 05:02:36] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 06:57:33] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 06:59:06] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 07:02:17] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 07:11:15] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 07:38:53] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-18 07:43:47] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-21 17:21:49] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-21 17:23:51] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-21 17:27:22] [MARKDOWN-FALLBACK] send_text: Markdown parse failed (Telegram says: [400 PEER_ID_INVALID]  Pyrogram 2.3.69 thinks: The peer id being used is invalid or not known yet. Make sure you meet the peer before interacting with it), retrying without parse_mode
+[2026-07-21 17:32:10] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-21 17:38:30] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-21 18:03:31] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-21 18:07:19] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-21 18:09:20] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)
+[2026-07-21 18:17:22] [RELINK] Plugin loaded — /relink command ready (unified handler, all chat types)

@@ -1,0 +1,49 @@
+# ── Core Telegram Clients ──────────────────────────────
+pyrofork>=2.3.69
+telethon>=1.34.0
+telethon-tgcrypto
+tgcrypto
+
+# ── MongoDB (mirror bot persistence) ───────────────────
+motor
+pymongo
+
+# ── Web server (keep-alive + health check) ─────────────
+flask>=3.0.0
+werkzeug>=3.0.0
+aiohttp
+
+# ── Utilities ──────────────────────────────────────────
+python-dotenv
+psutil
+aiofiles
+pytz
+Pillow
+opencv-python-headless
+mutagen
+yt-dlp
+requests
+cryptography
+devgagantools
+pyrogram
+aiofiles
+aiohttp
+cryptography
+devgagantools
+flask
+motor
+mutagen
+opencv-python-headless
+Pillow
+psutil
+pymongo
+pyrofork
+pyrogram
+python-dotenv
+pytz
+requests
+telethon
+telethon-tgcrypto
+tgcrypto
+werkzeug
+yt-dlp
