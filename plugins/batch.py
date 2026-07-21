@@ -10217,23 +10217,16 @@ async def text_handler(c, m):
     s = Z[uid].get('step')
 
     # ═══════════════════════════════════════════════════════════════
-    # CLONE MODE HANDLING — redirect to channel_clone plugin
+    # CLONE MODE HANDLING — let channel_clone.py's registered handler process it
     # ═══════════════════════════════════════════════════════════════
+    # IMPORTANT: Do NOT call clone_text_handler directly here.
+    # channel_clone.py has its own @X.on_message handler registered for
+    # the same filter. If we call it here AND let Pyrogram's handler chain
+    # run it, the message gets processed TWICE — causing duplicate replies
+    # and state corruption. Instead, raise ContinuePropagation so Pyrogram
+    # passes the message to channel_clone.py's registered handler.
     if s in ('clone_source', 'clone_count', 'clone_running'):
-        try:
-            from plugins.channel_clone import clone_text_handler as _clone_handler
-        except ImportError as e:
-            print(f"[BATCH] channel_clone import failed: {e}")
-            await safe_reply(m, '❌ Clone plugin failed to load. Please restart the bot.')
-            Z.pop(uid, None)
-            return
-        try:
-            await _clone_handler(c, m)
-        except Exception as e:
-            print(f"[BATCH] Clone handler error: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
-        return
+        raise ContinuePropagation
 
     # Use user's custom bot if set, otherwise use the main bot
     x = await get_ubot(uid)
