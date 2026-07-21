@@ -261,22 +261,23 @@ async def edit_message_safely(message, text):
 @bot.on_message(filters.command('cancel'))
 async def cancel_command(client, message):
     user_id = message.from_user.id
+    # Only handle /cancel if there's an active login in progress.
+    # Otherwise, let other /cancel handlers (batch, mirror, settings) handle it.
+    if not get_user_step(user_id):
+        from pyrogram import ContinuePropagation
+        raise ContinuePropagation
     await message.delete()
-    if get_user_step(user_id):
-        status_msg = login_cache.get(user_id, {}).get('status_msg')
-        if user_id in login_cache and 'temp_client' in login_cache[user_id]:
-            await login_cache[user_id]['temp_client'].disconnect()
-        login_cache.pop(user_id, None)
-        set_user_step(user_id, None)
-        if status_msg:
-            await edit_message_safely(status_msg,
-                '✅ Login process cancelled. Use /login to start again.')
-        else:
-            temp_msg = await safe_reply(message,
-                '✅ Login process cancelled. Use /login to start again.')
-            await temp_msg.delete(5)
+    status_msg = login_cache.get(user_id, {}).get('status_msg')
+    if user_id in login_cache and 'temp_client' in login_cache[user_id]:
+        await login_cache[user_id]['temp_client'].disconnect()
+    login_cache.pop(user_id, None)
+    set_user_step(user_id, None)
+    if status_msg:
+        await edit_message_safely(status_msg,
+            '✅ Login process cancelled. Use /login to start again.')
     else:
-        temp_msg = await safe_reply(message, 'No active login process to cancel.')
+        temp_msg = await safe_reply(message,
+            '✅ Login process cancelled. Use /login to start again.')
         await temp_msg.delete(5)
         
 @bot.on_message(filters.command('logout'))
