@@ -7,6 +7,7 @@ from shared_client import start_client
 import importlib
 import os
 import sys
+from typing import Optional
 from telethon import events
 
 # ═══════════════════════════════════════════════════════════════
@@ -198,6 +199,11 @@ async def load_and_run_plugins():
         except Exception:
             pass
 
+    # Commands that ALWAYS bypass the auth guard — needed for first-time setup
+    # and diagnostics. Without this, if OWNER_ID is empty/unset, the bot is
+    # completely dead and the user can't even ping it to see what's wrong.
+    ALWAYS_ALLOWED_COMMANDS = {'ping', 'diag', 'start', 'login', 'help', 'status'}
+
     async def is_allowed(user_id: int) -> bool:
         """Check if user is owner OR authorized user OR the bot itself."""
         # NEVER block the bot itself — prevents self-blocking that kills all interaction
@@ -209,14 +215,40 @@ async def load_and_run_plugins():
             return True
         return await is_auth_user(user_id)
 
+    def _extract_command(m) -> Optional[str]:
+        """Extract command name (lowercase, without /) from a message. Returns None if not a command."""
+        try:
+            text = m.text or m.caption or ""
+            if not text.startswith("/"):
+                return None
+            # Strip leading / and take first token, strip @botname suffix
+            first_token = text.split()[0].lstrip("/").split("@")[0].lower()
+            return first_token if first_token else None
+        except Exception:
+            return None
+
     # --- Pyrogram bot: private message guard ONLY ---
     # This handler catches ONLY private messages from non-allowed users.
     # It does NOT block group/channel messages — the bot needs to read
     # from source channels during batch/fetch operations.
     # Uses group=-1 so it runs BEFORE all other handlers.
+    #
+    # CRITICAL: Essential commands (/ping, /diag, /start, /login, /help, /status)
+    # ALWAYS bypass this guard. This ensures the bot is NEVER completely dead —
+    # even if OWNER_ID is misconfigured, the user can ping the bot and use /diag
+    # to see what's wrong.
     @app.on_message(pf.private, group=-1)
     async def auth_guard(c, m):
         uid = m.from_user.id
+
+        # ── BYPASS for essential commands ──
+        # These commands are needed for first-time setup and diagnostics.
+        # They MUST work even if OWNER_ID is empty or the user isn't auth'd.
+        cmd = _extract_command(m)
+        if cmd in ALWAYS_ALLOWED_COMMANDS:
+            print(f"[PRIVACY-BYPASS] Allowing essential command '/{cmd}' from user {uid} (bypasses auth)")
+            return  # Let it through to the real handler
+
         if not await is_allowed(uid):
             print(f"[PRIVACY] Blocked unauthorized private message from user {uid}")
             raise StopPropagation  # Silently drop — bot appears invisible
@@ -244,7 +276,8 @@ async def load_and_run_plugins():
     @app.on_message(_login_in_progress & pf.text & pf.private & ~pf.command([
         'start', 'batch', 'cancel', 'login', 'logout', 'stop', 'set', 'id', 'pay',
         'redeem', 'gencode', 'generate', 'keyinfo', 'encrypt', 'decrypt', 'keys',
-        'setbot', 'rembot', 'mirror', 'mirrorstop', 'mirrorstatus', 'explanlogs'
+        'setbot', 'rembot', 'mirror', 'mirrorstop', 'mirrorstatus', 'explanlogs',
+        'ping', 'diag', 'help', 'status', 'clone', 'resumeclone', 'clearbatch', 'clear'
     ]), group=-2)
     async def login_steps_handler_main(c, m):
         from plugins.login import handle_login_steps
@@ -271,14 +304,18 @@ async def load_and_run_plugins():
             f"Bot is alive and responding."
         )
 
-    # --- /diag command — diagnostic info for owner ---
+    # --- /diag command — diagnostic info (works for ALL users) ---
     @app.on_message(pf.command("diag") & pf.private)
     async def diag_handler(c, m):
-        """Diagnostic command — shows bot state for debugging."""
+        """Diagnostic command — shows bot state for debugging.
+
+        Works for ALL users (bypasses auth guard) so anyone can verify
+        the bot is alive. Owner sees full diagnostic; non-owner sees a
+        limited report that helps them understand why they can't use
+        the bot (e.g. not authorized).
+        """
         uid = m.from_user.id
-        if uid not in OWNER_ID:
-            await m.reply_text("❌ Owner only command.")
-            return
+        is_owner = uid in OWNER_ID
         import time as _diag_time
         from shared_client import app as _diag_app, client as _diag_client, userbot as _diag_userbot
         _diag_ts = _diag_time.strftime("%Y-%m-%d %H:%M:%S UTC", _diag_time.gmtime())
@@ -296,24 +333,50 @@ async def load_and_run_plugins():
             _bot_info = f"@{_me.username} (id={_me.id})"
         except Exception as _e:
             _bot_info = f"Error: {_e}"
-        await m.reply_text(
-            f"🔬 **Diagnostic Report**\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🕐 **Time:** `{_diag_ts}`\n"
-            f"🤖 **Bot:** {_bot_info}\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"**Client Status:**\n"
-            f"• Pyrogram app: {'✅ connected' if _app_connected else '❌ disconnected'}\n"
-            f"• Telethon client: {'✅ connected' if _client_connected else '❌ disconnected'}\n"
-            f"• Userbot: {'✅ connected' if _ubot_connected else '❌ not configured'}\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"**FloodWait:** {_flood_str}\n"
-            f"**OWNER_ID:** {list(OWNER_ID)}\n"
-            f"**Your ID:** `{uid}`\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"If bot was unresponsive, this message proves it's working now."
-        )
-        print(f"[DIAG] /diag used by owner {uid} — app_connected={_app_connected} flood={_flood_str}")
+
+        # Check auth status (don't crash if Mongo is down)
+        try:
+            _is_auth = await is_auth_user(uid)
+        except Exception:
+            _is_auth = False
+
+        if is_owner:
+            await m.reply_text(
+                f"🔬 **Diagnostic Report (Owner)**\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🕐 **Time:** `{_diag_ts}`\n"
+                f"🤖 **Bot:** {_bot_info}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"**Client Status:**\n"
+                f"• Pyrogram app: {'✅ connected' if _app_connected else '❌ disconnected'}\n"
+                f"• Telethon client: {'✅ connected' if _client_connected else '❌ disconnected'}\n"
+                f"• Userbot: {'✅ connected' if _ubot_connected else '❌ not configured'}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"**FloodWait:** {_flood_str}\n"
+                f"**OWNER_ID:** {list(OWNER_ID)}\n"
+                f"**Your ID:** `{uid}`\n"
+                f"**Auth in DB:** {'✅ YES' if _is_auth else '❌ no'}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"If bot was unresponsive, this message proves it's working now.\n"
+                f"If OWNER_ID is empty, set the OWNER_ID env var on Render."
+            )
+        else:
+            # Non-owner gets a limited report — enough to diagnose
+            # why they can't use the bot, but no sensitive info.
+            await m.reply_text(
+                f"🔬 **Diagnostic Report**\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🕐 **Time:** `{_diag_ts}`\n"
+                f"🤖 **Bot:** {_bot_info}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"**Your ID:** `{uid}`\n"
+                f"**Authorized:** {'✅ YES' if _is_auth else '❌ no'}\n"
+                f"**FloodWait:** {_flood_str}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"{'✅ You are authorized to use this bot.' if _is_auth else '❌ You are NOT authorized. Ask the owner to /auth you.'}\n"
+                f"If you are the owner, set OWNER_ID env var on Render to your ID: `{uid}`"
+            )
+        print(f"[DIAG] /diag used by user {uid} — owner={is_owner} auth={_is_auth} app_connected={_app_connected} flood={_flood_str}")
 
     # --- Diagnostic probe at group=2 — confirms messages reach between guard and debug ---
     @app.on_message(pf.private, group=2)

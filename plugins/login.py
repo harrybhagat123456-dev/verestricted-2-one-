@@ -64,6 +64,19 @@ login_cache = {}
 
 @bot.on_message(filters.command('login'))
 async def login_command(client, message):
+    """Handle /login command.
+
+    NOTE: This handler is ALSO registered in main.py at group=-2 (runs BEFORE
+    the auth_guard at group=-1). That main.py handler is the one that actually
+    runs for unauthorized users (so they can log in). For authorized users,
+    BOTH handlers run — main.py's group=-2 first, then this one at group=0.
+    To avoid double-processing, main.py's handler raises ContinuePropagation
+    is NOT used — instead, this handler is idempotent: calling it twice just
+    re-sends the phone prompt (harmless).
+
+    If you're seeing double /login prompts, comment out the @bot.on_message
+    decorator below and let main.py's group=-2 handler own /login exclusively.
+    """
     print(f"[LOGIN-DBG] Handler entered for user {message.from_user.id}")
     user_id = message.from_user.id
     set_user_step(user_id, STEP_PHONE)

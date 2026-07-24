@@ -51,7 +51,29 @@ def refresh_bot_token():
     return False  # No change
 
 # ─── OWNER / CONTROL SETTINGS ───────────────────────────────────────────────────
-OWNER_ID     = list(map(int, os.getenv("OWNER_ID", "").split())) if os.getenv("OWNER_ID", "").strip() else []  # space-separated list
+# Parse OWNER_ID as a list of integers (space-separated).
+# CRITICAL: If this is empty or unparseable, the bot's privacy guard will block
+# EVERY private message — including the owner's — making the bot appear dead.
+# We parse defensively and print a LOUD warning if something is wrong.
+_owner_raw = os.getenv("OWNER_ID", "").strip()
+try:
+    OWNER_ID = [int(x) for x in _owner_raw.split()] if _owner_raw else []
+except ValueError as _owner_err:
+    print(f"[CONFIG] ❌ FATAL: OWNER_ID contains non-numeric value: {_owner_err}")
+    print(f"[CONFIG] ❌ OWNER_ID must be space-separated integers (e.g. '123456789 987654321')")
+    print(f"[CONFIG] ❌ Got: '{_owner_raw}'")
+    print(f"[CONFIG] ❌ Bot will start but BLOCK ALL private messages until fixed!")
+    OWNER_ID = []
+
+if not OWNER_ID:
+    print("[CONFIG] ❌❌❌ FATAL: OWNER_ID is EMPTY!")
+    print("[CONFIG] ❌ The bot's privacy guard will block EVERY private message.")
+    print("[CONFIG] ❌ Set OWNER_ID env var on Render to your Telegram user ID (space-separated for multiple).")
+    print("[CONFIG] ❌ Get your ID by messaging @userinfobot on Telegram.")
+    print("[CONFIG] ❌ Essential commands (/ping, /diag, /start, /login) will still work to help you diagnose.")
+else:
+    print(f"[CONFIG] ✅ OWNER_ID loaded: {OWNER_ID} ({len(OWNER_ID)} owner(s))")
+
 STRING       = os.getenv("STRING", None) or None  # optional session string
 LOG_GROUP    = int(os.getenv("LOG_GROUP") or "0")  # Safe: empty string → 0
 FORCE_SUB    = int(os.getenv("FORCE_SUB") or "0")  # Safe: empty string → 0
