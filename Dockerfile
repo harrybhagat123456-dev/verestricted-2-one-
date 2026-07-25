@@ -7,6 +7,7 @@ RUN pip3 install wheel
 RUN pip3 install --no-cache-dir -U -r requirements.txt
 COPY . .
 RUN chmod +x start.sh
-EXPOSE 5000
+EXPOSE 10000
 
-CMD ["bash", "start.sh"]
+# THIS runs the actual Telegram bot
+CMD ["python3", "main.py"]
