@@ -9746,12 +9746,30 @@ async def process_cmd(c, m):
     pro = await safe_reply(m, '⏳ Checking...')
     
     if is_user_active(uid):
-        if pro:
-            await safe_edit(pro, 'You have an active task. Use /stop to cancel it.')
+        # ═══════════════════════════════════════════════════════════════
+        # STALE-STATE CLEANUP: If is_user_active() is True but there's no
+        # actual asyncio.Task running (previous bot crashed mid-batch),
+        # treat it as stale and clean up automatically. This prevents the
+        # bot from refusing /batch forever after a crash/restart.
+        # ═══════════════════════════════════════════════════════════════
+        _task = batch_tasks.get(uid)
+        if _task is None or _task.done():
+            print(f"[BATCH] uid={uid} had stale ACTIVE_USERS entry (task={_task}) — cleaning up")
+            try:
+                await remove_active_batch(uid)
+            except Exception as _e:
+                print(f"[BATCH] remove_active_batch error: {_e}")
+            batch_tasks.pop(uid, None)
+            _CANCEL_FLAGS.pop(uid, None)
+            # Don't return — fall through to normal /batch flow
         else:
-            # pro is None (FloodWait prevented initial reply) — try direct reply
-            await safe_reply(m, 'You have an active task. Use /stop to cancel it.')
-        return
+            # Live task is actually running — refuse.
+            if pro:
+                await safe_edit(pro, 'You have an active task. Use /stop to cancel it.')
+            else:
+                # pro is None (FloodWait prevented initial reply) — try direct reply
+                await safe_reply(m, 'You have an active task. Use /stop to cancel it.')
+            return
     
     # Check if user is in /fetch conversation
     try:

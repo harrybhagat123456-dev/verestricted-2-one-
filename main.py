@@ -47,6 +47,46 @@ _logging.basicConfig(
 from utils.ram_monitor import log_ram, start_periodic_ram_log
 log_ram("main_startup")
 
+# ═══════════════════════════════════════════════════════════════
+# EARLY FLASK HEALTH CHECK — bind to PORT BEFORE anything else.
+#
+# Render's web-service health check times out after 60s. If we wait
+# for Telegram clients + plugin loading before binding, the deploy
+# fails and Render kills the container → restart loop → bot never
+# becomes responsive (this is the root cause of "/batch not responding").
+#
+# Solution: start Flask in a daemon thread NOW. Render's probe gets
+# a 200 OK within ~2 seconds, the deploy succeeds, and the bot then
+# has all the time it needs to start Pyrogram + load plugins.
+# ═══════════════════════════════════════════════════════════════
+import threading as _threading
+
+def _start_flask_health_server():
+    """Start Flask in a daemon thread so Render's health check passes immediately."""
+    try:
+        from app import app as _flask_app
+        _port = int(os.environ.get("PORT", 10000))
+        # threaded=True + daemon thread so it never blocks shutdown
+        _flask_app.run(
+            host="0.0.0.0",
+            port=_port,
+            debug=False,
+            use_reloader=False,
+            threaded=True,
+        )
+    except Exception as _flask_err:
+        print(f"[FLASK-HEALTH] ❌ Failed to start Flask health server: {_flask_err}")
+        # Retry on a different port as a last resort — never crash the bot
+        try:
+            from app import app as _flask_app
+            _flask_app.run(host="0.0.0.0", port=10000, debug=False, use_reloader=False, threaded=True)
+        except Exception:
+            print("[FLASK-HEALTH] ❌ Even fallback port 10000 failed — Render health check will fail.")
+
+_flask_thread = _threading.Thread(target=_start_flask_health_server, name="flask-health", daemon=True)
+_flask_thread.start()
+print(f"[FLASK-HEALTH] ✅ Flask health-check thread started on PORT={os.environ.get('PORT', 10000)} (binds within ~2s)")
+
 async def load_and_run_plugins():
     # ═══════════════════════════════════════════════════════════════
     # PHASE 1: Start clients (Telethon + Pyrogram + Userbot)
@@ -303,6 +343,56 @@ async def load_and_run_plugins():
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"Bot is alive and responding."
         )
+
+    # --- EARLY /batch + /resumeclone responders (group=-1, before plugin handlers) ---
+    # These ACK the user's command IMMEDIATELY so the bot never appears dead.
+    # The real handler in plugins/batch.py / plugins/channel_clone.py (group=0)
+    # still runs and takes over via safe_edit on the ACK message.
+    #
+    # Why: if plugins take 5–10s to load (MongoDB, peer resolution, etc.),
+    # users get NO feedback and report "/batch not responding". This ACK
+    # proves the bot received the command and is processing it.
+    @app.on_message(pf.command(['batch', 'single']) & pf.private, group=-1)
+    async def early_batch_ack(c, m):
+        uid = m.from_user.id if m.from_user else None
+        if uid is None:
+            return
+        # Auth check — owner + auth users only (same as real handler)
+        if uid not in OWNER_ID and not await is_auth_user(uid):
+            return  # Let auth_guard (also group=-1) handle the block
+        try:
+            await m.reply_text(
+                "⏳ **/batch received** — initialising...\n"
+                "_If this message stays for >30s, run /diag to check bot state._"
+            )
+            print(f"[EARLY-BATCH] ACK sent to user {uid}")
+        except FloodWait as _fw:
+            _fw_s = _fw.value if hasattr(_fw, 'value') else 30
+            print(f"[EARLY-BATCH] FloodWait {_fw}s — suppressed")
+        except Exception as _e:
+            print(f"[EARLY-BATCH] ACK reply failed: {_e}")
+        # Do NOT raise StopPropagation — let the real /batch handler in
+        # plugins/batch.py run. The real handler will safe_edit the ACK
+        # message (it returns the message object via reply_text).
+
+    @app.on_message(pf.command(['resumeclone']) & pf.private, group=-1)
+    async def early_resumeclone_ack(c, m):
+        uid = m.from_user.id if m.from_user else None
+        if uid is None:
+            return
+        if uid not in OWNER_ID and not await is_auth_user(uid):
+            return
+        try:
+            await m.reply_text(
+                "⏳ **/resumeclone received** — loading previous clone state...\n"
+                "_If this stays for >30s, run /diag._"
+            )
+            print(f"[EARLY-RESUMECLONE] ACK sent to user {uid}")
+        except FloodWait as _fw:
+            _fw_s = _fw.value if hasattr(_fw, 'value') else 30
+            print(f"[EARLY-RESUMECLONE] FloodWait {_fw}s — suppressed")
+        except Exception as _e:
+            print(f"[EARLY-RESUMECLONE] ACK reply failed: {_e}")
 
     # --- /diag command — diagnostic info (works for ALL users) ---
     @app.on_message(pf.command("diag") & pf.private)

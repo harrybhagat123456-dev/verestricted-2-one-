@@ -633,12 +633,33 @@ async def create_destination_topics(
     if not source_topics:
         return topic_mapping
 
+    # ═══════════════════════════════════════════════════════════════
+    # PRE-FLIGHT: Fetch existing topics in the destination channel.
+    #
+    # If a topic with the same name already exists in the destination,
+    # we reuse it instead of creating a duplicate. This is critical for
+    # /resumeclone and re-runs: previously created topics are kept,
+    # only missing ones are created.
+    # ═══════════════════════════════════════════════════════════════
+    existing_dest_topics: Dict[str, int] = {}  # lowercase topic_name -> dest_topic_id
+    try:
+        existing_list = await _fetch_forum_topics(send_client, dest_chat_id, send_client)
+        for _t in existing_list:
+            _name = (_t.get('topic_name') or '').strip()
+            if _name:
+                existing_dest_topics[_name.lower()] = _t.get('topic_id')
+        print(f"[CLONE-CREATE] Found {len(existing_dest_topics)} existing topics in destination "
+              f"(will skip duplicates by name)")
+    except Exception as _e:
+        print(f"[CLONE-CREATE] Could not pre-fetch existing dest topics (will create all): {_e}")
+
     # Pre-flight check: verify the client can actually create topics by
     # probing with the first non-General topic. If this fails with a
     # permission error, we abort early instead of failing per-topic.
     non_general_topics = [t for t in source_topics if not t['is_general']]
     total = len(non_general_topics)
     created = 0
+    reused = 0  # topics reused from destination (already existed)
     permission_denied = False
 
     for idx, topic in enumerate(source_topics):
@@ -659,6 +680,25 @@ async def create_destination_topics(
         # omit the parameter so Telegram picks one automatically.
         topic_color = topic.get('topic_icon_color')  # None means "let Telegram decide"
 
+        # ═══════════════════════════════════════════════════════════════
+        # DUPLICATE CHECK: If a topic with the same name already exists
+        # in the destination, reuse it. This prevents the bot from
+        # creating duplicate topics when /resumeclone or /clone is run
+        # multiple times.
+        # ═══════════════════════════════════════════════════════════════
+        _existing_id = existing_dest_topics.get(topic_name.lower())
+        if _existing_id:
+            topic_mapping[topic['topic_id']] = _existing_id
+            reused += 1
+            print(f"[CLONE-CREATE] Reusing existing topic '{topic_name}' → dest_id={_existing_id} "
+                  f"(source_id={topic['topic_id']}) — skipped creation")
+            if progress_callback:
+                try:
+                    await progress_callback(topic_name, idx + 1, total)
+                except Exception:
+                    pass
+            continue
+
         try:
             await _clone_rate_limiter.acquire()
             # create_forum_topic returns a ForumTopicCreated object.
@@ -676,6 +716,9 @@ async def create_destination_topics(
             if dest_topic_id:
                 topic_mapping[topic['topic_id']] = dest_topic_id
                 created += 1
+                # Also add to existing_dest_topics so subsequent duplicates
+                # in the same source are caught
+                existing_dest_topics[topic_name.lower()] = dest_topic_id
                 print(f"[CLONE-CREATE] Created topic '{topic_name}' → dest_id={dest_topic_id} "
                       f"(source_id={topic['topic_id']})")
             else:
@@ -695,6 +738,7 @@ async def create_destination_topics(
                 if dest_topic_id:
                     topic_mapping[topic['topic_id']] = dest_topic_id
                     created += 1
+                    existing_dest_topics[topic_name.lower()] = dest_topic_id
             except Exception as e2:
                 print(f"[CLONE-CREATE] Retry failed for '{topic_name}': {e2}")
                 # Map to None so we know it failed — messages will go to General
@@ -725,8 +769,9 @@ async def create_destination_topics(
             except Exception:
                 pass
 
-    print(f"[CLONE-CREATE] Created {created}/{total} topics in destination"
-          f"{' (permission denied — fell back to General for remaining)' if permission_denied else ''}")
+    print(f"[CLONE-CREATE] Created {created}/{total} topics in destination "
+          f"({'permission denied — fell back to General for remaining' if permission_denied else 'ok'}, "
+          f"reused {reused} existing)")
     return topic_mapping
 
 
@@ -987,6 +1032,7 @@ async def run_clone(
             else:
                 await safe_edit(pt,
                     f'✅ **Step 3/5: Created {created_count} topics** in destination\n\n'
+                    f'_Existing topics with the same name were reused — no duplicates created._\n\n'
                     f'⏳ Starting message cloning...'
                 )
         else:
@@ -1328,16 +1374,39 @@ async def resumeclone_cmd(c, m):
     This works even if the session file was deleted — the skip logic is
     driven by MongoDB data, not in-memory state.
     """
-    from plugins.batch import safe_reply, is_user_active
+    from plugins.batch import (
+        safe_reply, is_user_active, remove_active_batch,
+        batch_tasks, _CANCEL_FLAGS,
+    )
 
     uid = m.from_user.id
     if uid not in OWNER_ID and not await is_auth_user(uid) and not await is_premium_user(uid):
         await safe_reply(m, "This feature requires premium or owner access.")
         return
 
+    # ═══════════════════════════════════════════════════════════════
+    # STALE-STATE CLEANUP: If is_user_active() is True but there's no
+    # actual asyncio.Task running (e.g. previous bot crashed mid-batch),
+    # treat it as stale and clean up automatically instead of refusing.
+    # This is the most common reason /resumeclone "doesn't respond" —
+    # the user gets a refusal message that itself fails to send during
+    # FloodWait, so they see silence.
+    # ═══════════════════════════════════════════════════════════════
     if is_user_active(uid):
-        await safe_reply(m, '⚠️ You already have an active task. Use /stop first.')
-        return
+        _task = batch_tasks.get(uid)
+        if _task is None or _task.done():
+            # Stale entry — no live task. Clean up and proceed.
+            print(f"[RESUMECLONE] uid={uid} had stale ACTIVE_USERS entry (task={_task}) — cleaning up")
+            try:
+                await remove_active_batch(uid)
+            except Exception as _e:
+                print(f"[RESUMECLONE] remove_active_batch error: {_e}")
+            batch_tasks.pop(uid, None)
+            _CANCEL_FLAGS.pop(uid, None)
+        else:
+            # Live task is actually running — refuse.
+            await safe_reply(m, '⚠️ You already have an active task. Use /stop first.')
+            return
 
     job = await _load_clone_job(uid)
     if not job:
@@ -1366,7 +1435,8 @@ async def resumeclone_cmd(c, m):
         f'**Source:** `{source_chat_id}`\n'
         f'**Range:** msg {start_msg_id} → {start_msg_id + message_count - 1}\n'
         f'**Last processed:** msg {last_id} ({done}/{message_count})\n\n'
-        f'Already-sent messages will be skipped automatically...'
+        f'Already-sent messages will be skipped automatically...\n'
+        f'_Existing topics in destination will be reused — no duplicates._'
     )
     await _execute_clone(c, m, uid, source_chat_id, start_msg_id,
                          source_link_type, message_count,
